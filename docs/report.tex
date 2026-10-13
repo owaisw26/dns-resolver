@@ -1,0 +1,468 @@
+\documentclass[11pt,a4paper]{article}
+
+% -------------------------------------------------
+% Page layout and typography
+% -------------------------------------------------
+\usepackage[
+    top=22mm,
+    bottom=24mm,
+    left=25mm,
+    right=25mm
+]{geometry}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{ragged2e}
+
+% -------------------------------------------------
+% Tables and lists
+% -------------------------------------------------
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{enumitem}
+
+\sisetup{
+    group-separator = {,},
+    group-minimum-digits = 4,
+    table-number-alignment = right,
+    round-mode = places,
+    round-precision = 2
+}
+
+% -------------------------------------------------
+% Headings, colours, and page style
+% -------------------------------------------------
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\definecolor{headingblue}{HTML}{17365D}
+\definecolor{linkblue}{HTML}{1F5A94}
+\definecolor{lightgray}{HTML}{666666}
+
+\titleformat{\section}
+  {\Large\bfseries\color{headingblue}}
+  {\thesection}
+  {0.7em}
+  {}
+
+\titlespacing*{\section}
+  {0pt}
+  {2.2ex plus 0.5ex minus 0.2ex}
+  {0.8ex}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{lightgray}COMP3331/9331}
+\fancyhead[R]{\small\color{lightgray}DNS Resolver Assignment Report}
+\fancyfoot[C]{\thepage}
+
+\setlength{\headheight}{14pt}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% -------------------------------------------------
+% Links and code formatting
+% -------------------------------------------------
+\usepackage{xurl}
+\usepackage[
+    colorlinks=true,
+    linkcolor=linkblue,
+    urlcolor=linkblue,
+    citecolor=linkblue,
+    pdfauthor={},
+    pdftitle={COMP3331/9331 DNS Resolver Assignment Report}
+]{hyperref}
+
+\urlstyle{same}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\program}[1]{\texttt{\textbf{#1}}}
+
+% -------------------------------------------------
+% Document metadata
+% -------------------------------------------------
+\title{
+    \vspace{-1.5cm}
+    {\Huge\bfseries\color{headingblue}
+    DNS Resolver Assignment Report}
+    \\[0.5em]
+    {\Large COMP3331/9331}
+}
+\author{Owais Wangde\\z5690720}
+\date{\small 2026 Term 2}
+
+\begin{document}
+
+\maketitle
+\vspace{-1.5em}
+
+\begin{center}
+    \rule{0.82\textwidth}{0.5pt}
+\end{center}
+
+\vspace{1em}
+
+% =================================================
+\section{Code organisation}
+
+The submission consists of two main programs.
+
+\program{parser.py} reads a single DNS message from a binary file and displays
+the decoded message in a readable format. It operates entirely on local files
+and does not perform any network communication.
+
+Its program flow is \code{main()} $\rightarrow$ read message file
+$\rightarrow$ \code{print\_message()} $\rightarrow$ \code{parse\_message()}.
+The parser then prints the header, Questions, Answers, Authority, and Additional
+sections in wire order.
+
+\program{resolver.py} implements the UDP DNS resolver. At startup, it reads the
+root hints file, binds to \code{127.0.0.1}, and handles each client datagram in
+a separate thread. Its flow is \code{main()} $\rightarrow$ \code{serve()}
+$\rightarrow$ \code{Resolver.response()}. For each query, \code{response()}
+checks the root-hints-local cases, searches the cache, and calls
+\code{resolve()} when no usable cached result is available. It then calls
+\code{build\_client\_response()} to send the reply.
+
+The programs share code through the \program{parser} module. \program{resolver.py}
+imports \code{parser.py} and calls \code{parser.parse\_message()} to decode both
+client queries and upstream DNS responses. It also uses the shared
+\code{Question}, \code{ResourceRecord}, and \code{DNSParseError} definitions.
+This keeps the parser's bounds checks, compression handling, and RDLENGTH rules
+the same in both programs.
+
+The automated tests are grouped by parser, resolver-core, black-box, and
+integration behaviour. The integration suite includes a deterministic UDP
+concurrency stress test that exercises the resolver and its shared cache without
+depending on public DNS.
+
+% =================================================
+\section{Data structures and algorithms}
+
+The \code{Question} structure stores a domain name, query type, and query class.
+The resource-record structure \code{ResourceRecord} stores:
+
+\begin{itemize}[leftmargin=2em, itemsep=0.2em]
+    \item the owner name;
+    \item record type and class;
+    \item time to live (TTL);
+    \item RDLENGTH;
+    \item decoded record data; and
+    \item the original RDATA bytes.
+\end{itemize}
+
+The resolver also uses \code{DNSRecord}, a smaller record structure for the
+supported DNS record types.
+
+The DNS message representation is the header values, a list of \code{Question}
+objects, and three ordered lists of \code{ResourceRecord} objects for the Answer,
+Authority, and Additional sections. \code{DNSMessage} keeps the input bytes;
+the parsing functions pass an offset forward as each field is decoded. Names are
+represented as strings with a trailing dot. The encoder maps case-normalised
+name suffixes to packet offsets, allowing a mixed-case owner to point to an
+earlier name while retaining the original Question spelling.
+
+The parser reads the DNS header, question section, and all resource records in
+the Answer, Authority, and Additional sections. It supports the following
+record types:
+
+\begin{center}
+    \code{A}, \code{NS}, \code{CNAME}, \code{MX}, and \code{PTR}.
+\end{center}
+
+The parser follows DNS compression pointers and detects pointer loops. A domain
+name is limited to 20 pointer jumps, and the parser verifies the end of every
+field before reading it. The RDLENGTH value determines the endpoint of each
+RDATA field. If an RDATA field is malformed, the parser reports the error while
+preserving the correct position for reading the following record.
+
+The resolver begins with the root name servers and their matching A records
+from the root hints file. Candidate servers are tried in order. A referral uses
+IN-class NS records in the Authority section and matching IN-class A glue in
+the Additional section. When usable glue is unavailable, the resolver performs
+a separate lookup from the root to obtain the referred name server's A record.
+
+Referral state is kept in a \code{Budget} object for one client request. It
+contains the deadline and counters for upstream attempts, referral levels, and
+CNAME records. The current candidate server list and CNAME chain are local
+variables in the resolution function. They are not shared between clients.
+
+Cache entries are indexed using the following key:
+
+\begin{center}
+    \code{(lowercase fully qualified name, type, class)}
+\end{center}
+
+Each cache entry stores an expiry time calculated using
+\code{time.monotonic()}. The TTL returned to a client decreases as time passes.
+Records with a TTL of zero are not cached. For an alias lookup, the cache can
+return a complete CNAME chain followed by the requested final record set.
+
+The cache is the only shared mutable resolver state. A \code{threading.Lock}
+protects cache reads and updates. Each UDP client request has its own worker
+thread, query bytes, client address and port, transaction ID, \code{Budget},
+candidate list, and CNAME chain. This prevents one lookup from changing another
+lookup's resolution state.
+
+% =================================================
+\section{Design decisions and limitations}
+
+\textbf{Parsing and matching.} All client and upstream packets use the same
+bounds-checked parser. It implements the DNS header, section layout, RDLENGTH
+boundaries, and compression pointers described by RFC 1035 [2, Section~4.1].
+A malformed client packet receives no reply. For upstream UDP, datagrams with a
+wrong source endpoint, ID, opcode, or Question are unrelated and ignored, as
+motivated by RFC 1035 [2, Section~7.3]. Once those identity fields match, TC,
+malformed structure or supported RDATA, an unsupported RCODE, or a socket error
+fails that candidate immediately; resolution continues with the next server
+without waiting out the remaining timeout.
+
+\textbf{Iterative resolution.} A cache miss starts from ordered root-hint
+addresses and sends non-recursive IPv4 UDP queries with fresh random 16-bit IDs.
+The answer, name-error, closer-delegation, CNAME, and server-failure states follow
+RFC 1034 [1, Section~5.3.3]. A referral is accepted only when an IN-class
+Authority NS RRset moves to a longer relevant suffix; only matching IN-class A
+glue is used. Otherwise, a nested A lookup resolves the nameserver.
+
+\textbf{Aliases and negative answers.} For A, NS, MX, and PTR, CNAME RRsets are
+kept in wire order before the final type. Targets must be consistent; loops and
+more than ten retained CNAME records cause SERVFAIL. A direct CNAME query returns
+the RRset without chasing it, consistent with RFC 1034 [1, Sections~4.3.2
+and~5.2.2]. Authoritative NXDOMAIN is final, but reachable CNAME links in that
+same packet are retained along with links from earlier packets. AA is copied only
+when the complete positive, NODATA, or NXDOMAIN result came from one authoritative
+packet; cached and cross-packet results clear it.
+
+\textbf{Caching and response construction.} Positive RRsets use lowercase
+\code{(name, type, class)} keys, absolute monotonic expiry, decreasing returned
+TTLs, and no TTL-zero reuse, following RFC 1035 [2, Section~6.1.3]. The response
+encoder preserves the client's ID, opcode, RD, and Question spelling, sets QR and
+RA, derives exact counts, and safely compresses case-insensitive suffix matches.
+At the classic UDP limit in RFC 1035 [2, Section~4.2.1], this assignment requires
+TC=0, so an encoding over 512 bytes becomes an empty SERVFAIL.
+
+\textbf{Limits and concurrency.} Each request has a
+\code{min(30, 50 * timeout)} deadline and caps of 50 upstream attempts, ten
+referrals, and ten retained CNAME records. Independent worker threads prevent a
+slow lookup from serialising other UDP clients, targeting RFC 1035 [2,
+Section~6.1.1], while a lock protects the only shared mutable object, the cache.
+The implementation uses only Python's standard library. It does not implement
+TCP fallback, IPv6, EDNS(0), DNSSEC validation, negative or persistent caching,
+or record types outside the assignment. A production resolver would also bound
+worker threads and request rates.
+
+% =================================================
+\section{Performance report}
+
+On 30 July 2026, a raw-UDP client on the same MacBook Air tested the submitted
+resolver and Cloudflare \code{1.1.1.1}. Every exchange used a fresh transaction
+ID, the fixed order below, and a three-second client timeout. Latency ran from
+\code{sendto} to the matching \code{recvfrom}; total is batch wall-clock time.
+
+\begin{description}[leftmargin=5.5em, style=nextline, itemsep=0.1em]
+    \item[A] \code{example.com}, \code{www.iana.org},
+    \code{www.python.org}, \code{www.unsw.edu.au}
+    \item[NS] \code{example.com}, \code{iana.org}, \code{python.org},
+    \code{unsw.edu.au}
+    \item[MX] \code{example.com}, \code{gmail.com}, \code{outlook.com},
+    \code{unsw.edu.au}
+    \item[CNAME] \code{www.python.org}, \code{www.wikipedia.org},
+    \code{www.microsoft.com}, \code{www.github.com}
+    \item[PTR] reversed names for \code{8.8.8.8}, \code{1.1.1.1},
+    \code{4.2.2.4}, and \code{8.8.4.4}
+\end{description}
+
+One resolver process handled cold then warm sequential batches; a fresh process
+handled cold then warm concurrent batches. The public batches used the same
+client and order, with RD set for Cloudflare. Thus only the local resolver's
+cache state was controlled; Cloudflare's pre-existing cache state is unknown.
+
+\begin{table}[htbp]
+    \centering
+    \scriptsize
+    \setlength{\tabcolsep}{2.2pt}
+    \caption{Fixed 20-query raw-UDP comparison (times in ms)}
+    \label{tab:performance}
+    \vspace{0.3em}
+
+    \begin{tabular}{
+        lrrrr
+        S[table-format=5.2]
+        S[table-format=4.2]
+        S[table-format=4.2]
+        S[table-format=4.2]
+    }
+        \toprule
+        \textbf{Batch}
+        & \textbf{Q}
+        & \textbf{OK}
+        & \textbf{RC}
+        & \textbf{TO}
+        & {\textbf{Total}}
+        & {\textbf{Mean}}
+        & {\textbf{Median}}
+        & {\textbf{p95}} \\
+        \midrule
+        Local cold seq. & 20 & 18 & 2 & 0
+            & 16865.74 & 843.26 & 301.81 & 2752.44 \\
+        Local warm seq. & 20 & 18 & 2 & 0
+            & 5924.87 & 296.23 & 0.12 & 2939.55 \\
+        Local cold conc. & 20 & 18 & 2 & 0
+            & 2847.37 & 825.48 & 334.41 & 2683.31 \\
+        Local warm conc. & 20 & 18 & 2 & 0
+            & 3132.49 & 358.20 & 69.69 & 2855.03 \\
+        Cloudflare seq. & 20 & 20 & 0 & 0
+            & 927.34 & 46.35 & 11.62 & 168.35 \\
+        Cloudflare conc. & 20 & 20 & 0 & 0
+            & 207.32 & 55.86 & 40.13 & 178.41 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+All 120 exchanges received replies. The two local non-zero results in every
+batch were SERVFAIL for \code{www.iana.org A} and
+\code{1.1.1.1.in-addr.arpa PTR}; they were not timeouts. Warm sequential median
+fell from 301.81 ms to 0.12 ms because many positive answers were cached.
+Concurrency reduced cold batch wall time from 16.87 s to 2.85 s. Warm concurrent
+median also improved, although its total was slightly above cold concurrent due
+to Internet variation and uncached/NODATA work. Cloudflare was faster, but it is
+a distributed recursive service with unknown cache state, so this is contextual
+rather than a controlled implementation-to-implementation comparison.
+
+\subsection*{Concurrency stress test}
+
+On 30 July 2026, the concurrency stress test in
+\path{tests/test_resolver_integration.py} was run on the same host. It uses a
+local scripted authoritative UDP server, so the result is repeatable and
+independent of Internet conditions. The test sends five waves of 40 clients
+released simultaneously: one cold-cache wave and four warm-cache waves, for 200
+requests in total. Each request has a unique transaction ID, while the 40 names
+and expected addresses repeat across waves. The upstream server adds
+deterministic delays of 0--21 ms to reorder cold responses.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Concurrent resolver stress-test result}
+    \label{tab:concurrency-stress}
+    \vspace{0.5em}
+
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Measure} & \textbf{Result} \\
+        \midrule
+        Client requests attempted & 200 \\
+        Responses received and validated & 200 \\
+        Timeouts or client errors & 0 \\
+        Transaction-ID or answer mismatches & 0 \\
+        Upstream queries & 40 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The 40 upstream queries came from the cold wave; all 160 later requests were
+served from the shared cache. The assertions verify every response ID and A
+record rather than only counting replies. This stresses simultaneous socket
+handling, per-request state isolation, concurrent cache writes, and concurrent
+cache reads. The existing slow-versus-fast test separately confirms that a
+300 ms upstream delay does not serialise an unrelated request.
+
+% =================================================
+\section{Security discussion}
+
+\textbf{DNS cache poisoning.} An attacker may send a forged UDP response before
+the legitimate upstream response arrives.
+
+For each upstream request, this resolver generates a new random transaction ID.
+It also validates the response's source IP address, source port, transaction ID,
+flags, and Question section. These checks reduce the likelihood that a forged
+response will be accepted. However, they do not provide cryptographic
+authentication. DNSSEC validation is outside the scope of the assignment.
+
+\textbf{Resource exhaustion and amplification.} A slow upstream server can
+occupy a worker thread, while many client packets can create threads. A resolver
+that is reachable from the Internet can also be used to reflect larger DNS
+responses towards another host.
+
+The resolver limits the resources consumed by a single request through
+timeouts and limits on upstream attempts, referrals, and CNAME records. It also
+rejects malformed domain names and malformed RDATA fields safely.
+
+Finally, the resolver binds only to \code{127.0.0.1}. This prevents remote
+Internet clients from using it as an open recursive resolver or as part of a DNS
+amplification attack.
+
+% =================================================
+\section{References}
+
+\begin{enumerate}[leftmargin=2em, label={[\arabic*]}, itemsep=0.8em]
+    \item P. Mockapetris,
+    \textit{Domain Names: Concepts and Facilities},
+    RFC 1034, November 1987.\\
+    \url{https://datatracker.ietf.org/doc/html/rfc1034}
+
+    \item P. Mockapetris,
+    \textit{Domain Names: Implementation and Specification},
+    RFC 1035, November 1987.\\
+    \url{https://datatracker.ietf.org/doc/html/rfc1035}
+
+    \item Internet Assigned Numbers Authority,
+    \textit{Domain Name System (DNS) Parameters}.\\
+    \url{https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml}
+
+    \item COMP3331/9331,
+    \textit{Assignment: Building a DNS Resolver},
+    2026 Term 2, version v1.
+
+    \item R. Elz and R. Bush,
+    \textit{Clarifications to the DNS Specification},
+    RFC 2181, July 1997.\\
+    \url{https://datatracker.ietf.org/doc/html/rfc2181}
+
+    \item D. Andrews,
+    \textit{Negative Caching of DNS Queries (DNS NCACHE)},
+    RFC 2308, March 1998.\\
+    \url{https://datatracker.ietf.org/doc/html/rfc2308}
+
+    \item R. Arends et al.,
+    \textit{DNS Security Introduction and Requirements},
+    RFC 4033, March 2005.\\
+    \url{https://datatracker.ietf.org/doc/html/rfc4033}
+\end{enumerate}
+
+% =================================================
+\section{AI interaction summary}
+
+Codex was used between 15 and 30 July 2026 as a learning, design-review, and
+testing aid. During 15--17 July, I used it to clarify DNS name compression,
+including pointer offsets, nested pointers, loop and bounds checks, RDLENGTH
+boundaries, and retaining the outer-field offset after following a pointer. On
+16 July, AI produced a sample name-decoding algorithm, which I rewrote and
+adapted to the \program{parser.py} structure rather than copying directly.
+
+From 19--26 July, I discussed how to organise \program{resolver.py} and reasoned
+through later assignment stages. Stage 2 discussion covered root-hints parsing,
+local root NS/A responses, flags, counts, and failure handling; the 22 July
+interaction was conceptual and generated no submitted implementation. Stage 3
+discussion covered iterative referrals, IN-class glue, nested nameserver-address
+lookups, CNAME and negative answers, caching, timeouts, response size, and
+concurrency.
+
+On 27 July, AI suggested parser, resolver, malformed-packet, cache, failover, and
+concurrency tests. On 30 July, it helped design the deterministic 200-request
+stress test, identify relevant RFC 1034/1035 sections after tutor feedback, and
+audit edge cases. This affected \program{tests/}, \program{report.tex}, and
+targeted parts of \program{resolver.py}.
+
+I retained ideas that matched the specification, rewrote or simplified proposed
+algorithms, and rejected external DNS libraries, changed assessed interfaces,
+public recursive resolution, TCP fallback, and other out-of-scope features. I
+checked retained work against the assignment, RFCs, released packets, automated
+and live tests, repeated stress runs, and PDF inspection. I reviewed and can
+explain the parser, compression, iterative resolver, cache, and concurrency
+components in the viva. Detailed dated interactions are in
+\program{ai-log.txt}.
+
+\end{document}

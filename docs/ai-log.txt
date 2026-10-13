@@ -1,0 +1,137 @@
+AI interaction log
+==================
+
+Tool used: OpenAI Codex
+
+15 July 2026
+Asked for clarification of RFC 1035 DNS name compression, pointer offsets, and
+compressed suffixes. I used the explanation to check my understanding before
+implementing parser.py and verified it against the assignment specification.
+
+16 July 2026
+Asked for a sample compressed-name decoding algorithm. I retained its general
+tracking approach but rewrote it for DNSMessage, bounds checks, RDLENGTH, pointer
+loops, and the assignment's 20-jump limit; I did not copy the sample directly.
+
+16 July 2026
+Asked AI to double-check how to retain the outer resume offset after following a
+pointer. I used the explanation to separate the current decoding position from
+the offset returned to the caller, then tested pointer chains and bounded RDATA.
+
+17 July 2026
+Discussed difficult Stage 1 cases: reserved label forms, label/name limits,
+pointer loops, section traversal, malformed supported RDATA, unknown types, and
+exact RDLENGTH boundaries. I used this as a parser.py test checklist and rejected
+external DNS libraries.
+
+19 July 2026
+Asked how to structure resolver.py. I adapted the suggested separation into
+DNSRecord, Budget, Encoder, Resolver, and focused resolution/cache helpers while
+preserving the required CLI and standard-library UDP implementation.
+
+22 July 2026
+Conceptually discussed Stage 2 root-hints parsing, root NS/A answers, flags,
+section counts, and unsupported-question handling. No submitted implementation
+was generated; I checked the discussion against the Stage 2 specification.
+
+24 July 2026
+Discussed Stage 3 iterative resolution: ordered candidates, closer referrals,
+NS/A glue matching, and nested nameserver A lookups. I adapted the ideas to the
+assignment's caps and non-recursive IPv4 UDP requirements, rejecting TCP,
+public-recursive, and external-library approaches.
+
+26 July 2026
+Discussed CNAME chains, NXDOMAIN/NODATA, loop and record limits, failover, TTL
+expiry, 512-byte responses, and concurrency. I used these as a review checklist
+and retained only behaviour consistent with the assignment.
+
+27 July 2026
+Asked for test suggestions. I added deterministic parser, referral, CNAME,
+negative-answer, failover, cache, malformed-packet, response-metadata, and
+concurrency tests using independent wire helpers and local scripted UDP servers.
+
+30 July 2026
+Prompt excerpt: "functions should be shorter, maximum of a 100 lines ... run
+tests after this to ensure that the output is the same". I retained a helper-based
+resolver refactor, simplified repetitive comments, audited every function to at
+most 100 lines, and ran unittest and pytest.
+
+30 July 2026
+Prompt excerpt: "incorporate RFC and stress testing for concurrency in our
+report, and stress test also means writing a test". I checked RFC 1034 Sections
+4.3.2, 5.2.2, and 5.3.3 and RFC 1035 Sections 4.1, 4.2.1, 6.1.1, 6.1.3, and
+7.3 against the original RFCs. I added the deterministic five-wave, 200-request
+stress test and documented its zero-error result.
+
+30 July 2026
+Asked Codex to carry out a final compliance audit. It identified case-sensitive
+compression reuse, same-packet CNAME/NXDOMAIN loss, delayed TC/malformed
+failover, non-IN glue acceptance, inconsistent/over-limit CNAME handling, and
+uncaught upstream socket errors. I retained targeted fixes and regressions while
+rejecting CLI changes, new dependencies, TCP, EDNS, DNSSEC, and other
+out-of-scope features.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
